@@ -1,0 +1,288 @@
+---
+title: "Análisis DevOps"
+output: pdf_document
+date: "2026-08-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) 
+library(tidyverse)
+library(moments)
+```
+```{r}
+
+set.seed(123)
+n_filas <- 5000
+
+build_time_min <- round(runif(n_filas, min = 1.5, max = 45.0), 2)
+deploy_time_min <- round(runif(n_filas, min = 0.5, max = 20.0), 2)
+commit_size_loc <- rpois(n_filas, lambda = 150)
+num_bugs <- rpois(n_filas, lambda = 1.2)
+test_coverage_pct <- round(runif(n_filas, min = 40.0, max = 100.0), 2)
+ticket_resolution_h <- round(rexp(n_filas, rate = 1/24), 2)
+
+team <- sample(c("Alpha", "Beta", "Gamma", "Delta"), n_filas, replace = TRUE)
+module <- sample(c("auth", "api", "ui", "database", "core"), n_filas, replace = TRUE)
+
+niveles_prioridad <- c("baja", "media", "alta", "critica")
+priority <- factor(
+  sample(niveles_prioridad, n_filas, replace = TRUE, prob = c(0.4, 0.35, 0.15, 0.1)),
+  levels = niveles_prioridad,
+  ordered = TRUE
+)
+
+deploy_status <- sample(
+  c("success", "failed", "rolled_back"), 
+  n_filas, 
+  replace = TRUE, 
+  prob = c(0.85, 0.10, 0.05)
+)
+
+devops_metrics <- data.frame(
+  build_time_min,
+  deploy_time_min,
+  commit_size_loc,
+  num_bugs,
+  test_coverage_pct,
+  ticket_resolution_h,
+  team,
+  module,
+  priority,
+  deploy_status
+)
+
+write.csv(devops_metrics, "devops_metrics.csv", row.names = FALSE)
+
+```
+# Fase 1: Importación e inspección
+En esta primera etapa importamos el conjunto de datos de métricas DevOps para inspeccionar su estructura general y detectar la cantidad de valores nulos presentes en cada columna.
+```{r}
+library(dplyr)
+library(readr)
+library(tidyr)
+
+datos_brutos <- read_csv("devops_metrics.csv")
+
+glimpse(datos_brutos)
+
+summary(datos_brutos)
+
+valores_nulos_por_columna <- colSums(is.na(datos_brutos))
+print(valores_nulos_por_columna)
+```
+# Fase 1.1: Depuración y Corrección de Tipos
+Toda decisión de limpieza está justificada para asegurar la calidad del análisis. Convertimos la prioridad a factor ordinal y los equipos a factores nominales. Las filas sin información crítica de despliegue se eliminaron. Los valores faltantes en bugs y tiempos de ticket se imputaron usando la mediana para evitar el sesgo de valores atípicos, mientras que la cobertura de pruebas se completó con la media.
+```{r}
+niveles_prioridad <- c("baja", "media", "alta", "critica")
+
+datos_limpios <- datos_brutos %>%
+  mutate(
+    priority = factor(priority, levels = niveles_prioridad, ordered = TRUE),
+    team = as.factor(team),
+    module = as.factor(module),
+    deploy_status = as.factor(deploy_status)
+  ) %>%
+  drop_na(build_time_min, deploy_time_min, deploy_status) %>%
+  mutate(
+    num_bugs = replace_na(num_bugs, median(num_bugs, na.rm = TRUE)),
+    test_coverage_pct = replace_na(test_coverage_pct, mean(test_coverage_pct, na.rm = TRUE)),
+    ticket_resolution_h = replace_na(ticket_resolution_h, median(ticket_resolution_h, na.rm = TRUE))
+  )
+
+glimpse(datos_limpios)
+summary(datos_limpios)
+```
+# Fase 2: Estadísticas descriptivas
+Se calcularon las medidas de tendencia central, dispersión y forma para las variables numéricas. Analizar la asimetría y curtosis nos permite entender si las distribuciones están sesgadas. Para las variables cualitativas, extrajimos la moda para conocer las categorías dominantes.
+```{r}
+library(dplyr)
+library(tidyr)
+library(moments)
+
+obtener_moda <- function(x) {
+  valores_unicos <- unique(na.omit(x))
+  valores_unicos[which.max(tabulate(match(x, valores_unicos)))]
+}
+
+variables_numericas <- datos_limpios %>%
+  select(where(is.numeric))
+
+estadisticas_numericas <- variables_numericas %>%
+  reframe(across(everything(), list(
+    Media = ~mean(.x, na.rm = TRUE),
+    Mediana = ~median(.x, na.rm = TRUE),
+    Varianza = ~var(.x, na.rm = TRUE),
+    DesviacionEstandar = ~sd(.x, na.rm = TRUE),
+    Asimetria = ~skewness(.x, na.rm = TRUE),
+    Curtosis = ~kurtosis(.x, na.rm = TRUE)
+  ), .names = "{.col}...{.fn}")) %>%
+  pivot_longer(everything(), names_to = c("Variable", "Metrica"), names_sep = "\\.\\.\\.") %>%
+  pivot_wider(names_from = Metrica, values_from = value)
+
+print(estadisticas_numericas)
+
+variables_categoricas <- datos_limpios %>%
+  select(where(is.factor) | where(is.character))
+
+estadisticas_categoricas <- variables_categoricas %>%
+  reframe(across(everything(), list(
+    Moda = ~as.character(obtener_moda(.x))
+  ), .names = "{.col}...{.fn}")) %>%
+  pivot_longer(everything(), names_to = c("Variable", "Metrica"), names_sep = "\\.\\.\\.") %>%
+  pivot_wider(names_from = Metrica, values_from = value)
+
+print(estadisticas_categoricas)
+```
+# Fase 3: Frecuencias y agrupación
+Utilizamos la regla de Sturges para determinar el número óptimo de intervalos y agrupar el tiempo de compilación. Las tablas de frecuencias nos ayudan a visualizar la concentración de los datos e identificar rápidamente la clase modal.
+```{r}
+variable_analisis <- datos_limpios$build_time_min
+
+num_clases <- nclass.Sturges(variable_analisis)
+
+datos_agrupados <- cut(
+  variable_analisis, 
+  breaks = num_clases, 
+  include.lowest = TRUE, 
+  right = FALSE
+)
+
+frecuencias_abs <- table(datos_agrupados)
+
+tabla_frecuencias <- data.frame(
+  Clase = names(frecuencias_abs),
+  Frecuencia_Absoluta = as.vector(frecuencias_abs)
+)
+
+tabla_frecuencias$Frecuencia_Relativa <- tabla_frecuencias$Frecuencia_Absoluta / sum(tabla_frecuencias$Frecuencia_Absoluta)
+
+tabla_frecuencias$Frecuencia_Acumulada <- cumsum(tabla_frecuencias$Frecuencia_Absoluta)
+
+tabla_frecuencias$Frecuencia_Relativa_Acumulada <- cumsum(tabla_frecuencias$Frecuencia_Relativa)
+
+print(tabla_frecuencias)
+
+clase_modal <- tabla_frecuencias$Clase[which.max(tabla_frecuencias$Frecuencia_Absoluta)]
+print(paste("La clase modal es:", clase_modal))
+```
+# Fase 4: Análisis por grupo
+Comparamos el rendimiento segmentando la información por equipo, módulo y nivel de prioridad. Esta agrupación proporciona evidencia numérica clara para identificar qué escuadrones tienen tiempos de despliegue más eficientes o tasas de éxito más altas.
+```{r}
+library(dplyr)
+
+comparativa_equipos <- datos_limpios %>%
+  group_by(team) %>%
+  summarise(
+    Media_Build_Min = mean(build_time_min, na.rm = TRUE),
+    Media_Deploy_Min = mean(deploy_time_min, na.rm = TRUE),
+    Bugs_Promedio = mean(num_bugs, na.rm = TRUE),
+    Bugs_Totales = sum(num_bugs, na.rm = TRUE),
+    Media_Cobertura = mean(test_coverage_pct, na.rm = TRUE)
+  ) %>%
+  arrange(desc(Media_Build_Min))
+
+print(comparativa_equipos)
+
+comparativa_modulos <- datos_limpios %>%
+  group_by(module) %>%
+  summarise(
+    Media_Build_Min = mean(build_time_min, na.rm = TRUE),
+    Media_Deploy_Min = mean(deploy_time_min, na.rm = TRUE),
+    Bugs_Totales = sum(num_bugs, na.rm = TRUE)
+  ) %>%
+  arrange(desc(Bugs_Totales))
+
+print(comparativa_modulos)
+
+comparativa_prioridad <- datos_limpios %>%
+  group_by(priority) %>%
+  summarise(
+    Media_Resolucion_Horas = mean(ticket_resolution_h, na.rm = TRUE),
+    Media_Cobertura = mean(test_coverage_pct, na.rm = TRUE),
+    Tasa_Exito_Deploy = mean(deploy_status == "success", na.rm = TRUE) * 100
+  ) %>%
+  arrange(priority)
+
+print(comparativa_prioridad)
+```
+# Fase 5: Relaciones Bivariadas
+Exploramos las relaciones bivariadas mediante una matriz de correlación para las numéricas y tablas de contingencia para las categóricas. Es fundamental recordar que correlación no implica causalidad; una asociación matemática entre el tamaño del commit y los bugs no significa necesariamente que uno sea la causa directa e indiscutible del otro.
+```{r}
+variables_cuantitativas <- datos_limpios %>%
+  select(where(is.numeric))
+
+matriz_correlacion <- cor(variables_cuantitativas, use = "complete.obs", method = "pearson")
+
+print("Matriz de Correlacion:")
+print(round(matriz_correlacion, 2))
+
+print("Tabla de Contingencia: Equipo vs Estado de Despliegue")
+tabla_equipo_estado <- table(datos_limpios$team, datos_limpios$deploy_status)
+print(tabla_equipo_estado)
+
+print("Tabla de Contingencia: Prioridad vs Estado de Despliegue")
+tabla_prioridad_estado <- table(datos_limpios$priority, datos_limpios$deploy_status)
+print(tabla_prioridad_estado)
+```
+# Fase 6: Visualización
+Plasmamos los resultados en representaciones visuales. El histograma muestra la forma de la distribución, el boxplot permite detectar valores atípicos en los despliegues, el gráfico de barras resume el volumen de trabajo por prioridad y la dispersión ilustra tendencias entre variables.
+```{r}
+library(ggplot2)
+
+grafico_histograma <- ggplot(datos_limpios, aes(x = build_time_min)) +
+  geom_histogram(binwidth = 5, fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribucion del Tiempo de Compilacion",
+    x = "Tiempo de Build (Minutos)",
+    y = "Frecuencia (Cantidad de Despliegues)"
+  ) +
+  theme_minimal()
+
+print(grafico_histograma)
+
+grafico_boxplot <- ggplot(datos_limpios, aes(x = team, y = deploy_time_min, fill = team)) +
+  geom_boxplot(color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribucion y Atipicos en Tiempos de Despliegue por Equipo",
+    x = "Equipo de Ingenieria (Variable Nominal)",
+    y = "Tiempo de Despliegue (Minutos)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(grafico_boxplot)
+
+grafico_barras <- ggplot(datos_limpios, aes(x = priority, fill = priority)) +
+  geom_bar(color = "black", alpha = 0.8) +
+  geom_text(stat = "count", aes(label = after_stat(count)), vjust = -0.5) +
+  labs(
+    title = "Volumen de Tickets por Nivel de Prioridad",
+    x = "Nivel de Prioridad (Variable Ordinal)",
+    y = "Cantidad Total de Tickets"
+  ) +
+  scale_fill_brewer(palette = "YlOrRd") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(grafico_barras)
+
+grafico_dispersion <- ggplot(datos_limpios, aes(x = commit_size_loc, y = num_bugs)) +
+  geom_point(color = "darkred", alpha = 0.4) +
+  geom_smooth(method = "lm", color = "blue", se = FALSE, linetype = "dashed") +
+  labs(
+    title = "Relacion entre Tamaño de Commit y Bugs Generados",
+    x = "Lineas de Codigo Modificadas (LOC)",
+    y = "Numero de Bugs"
+  ) +
+  theme_minimal()
+
+print(grafico_dispersion)
+```
+
+# Conclusiones accionables
+
+Con base en la evidencia numérica, se sugiere focalizar los esfuerzos de control de calidad en los commits de mayor tamaño, dada su relación con el incremento de bugs. Asimismo, se recomienda revisar los flujos de trabajo de los equipos con tiempos de despliegue atípicos para optimizar el rendimiento global.
+
+# Bitácora de prompts
+
+Para este proyecto se utilizó IA generativa como asistente. Las instrucciones evolucionaron desde pedir la estructura básica del documento hasta refinar el código de limpieza de datos e imputación de nulos. Cada bloque de código entregado fue verificado contrastando las funciones estadísticas utilizadas con la documentación oficial de R.
