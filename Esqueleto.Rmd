@@ -281,7 +281,9 @@ print(grafico_dispersion)
 
 # Conclusiones accionables
 
-Con base en la evidencia numérica, se sugiere focalizar los esfuerzos de control de calidad en los commits de mayor tamaño, dada su relación con el incremento de bugs. Asimismo, se recomienda revisar los flujos de trabajo de los equipos con tiempos de despliegue atípicos para optimizar el rendimiento global.
+Enfoque de Calidad: La evidencia numérica demuestra una correlación casi nula (0.01) entre el tamaño del commit y la cantidad de bugs generados. Se sugiere redirigir los esfuerzos de control de calidad hacia otros factores operativos (como la complejidad lógica o módulos específicos), en lugar de limitarse al volumen de líneas modificadas.
+
+Optimización de Tiempos: Se recomienda revisar y estandarizar los flujos de trabajo de los equipos que presentan tiempos de despliegue atípicos, con el objetivo de optimizar el rendimiento global y estabilizar el ritmo de entregas.
 
 # Bitácora de prompts
 
