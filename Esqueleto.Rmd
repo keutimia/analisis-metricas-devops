@@ -1,5 +1,6 @@
 ---
 title: "Análisis DevOps"
+author: "Vianca Viveros"
 output: pdf_document
 date: "2026-08-28"
 ---
